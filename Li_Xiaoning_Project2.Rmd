@@ -1,0 +1,237 @@
+---
+title: "Project 2"
+author: "Xiaoning Li"
+output: 
+  word_document:
+    toc: true
+date: "2025-11-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r include=FALSE}
+library(here)
+library(dplyr)
+library(knitr)
+library(tidyr)
+library(knitr)
+library(stringr)
+```
+
+
+```{r include=FALSE}
+# Import datasets ------------------------------------------------------------
+encounter <- read.csv(here::here("EncounterData.csv"))
+patient <- read.csv(here::here("PatientData.csv"))
+
+# Merge the patient level data into the encounter level data -----------------
+## Use left join because each encounter should have a corresponding patient
+merged <- merge(encounter, patient, by = "MRN", all.x = TRUE)
+```
+
+
+# Analytic Dataset Description
+This dataset contains encounter data for women overian cancer patients, where each row represents a single patient encounter. The raw dataset contains 14 variables and 550 rows.    
+The variables include demographics (race, ethnicity, financial class, date of birth), clinical measurements (temperature, distress score, white blood cell count, BMI), medical history (hypertension, congestive heart failure, diabetes) and details for each encounter (contact date, encounter type, Medical Record Number).
+
+
+```{r include=FALSE}
+# Overview of the data -------------------------------------------------------
+## Check for missing data
+colSums(is.na(merged))
+
+## Summary for data columns
+summary(merged$temp)
+summary(merged$distress_score)
+summary(merged$WBC)
+summary(merged$BMI.r)
+
+table(merged$enc_type)
+table(merged$race)
+table(merged$ethnicity)
+table(merged$financialclass)
+table(merged$hypertension)
+table(merged$CHF)
+table(merged$diabetes)
+
+## Dimensions before data cleaning
+nrow(merged)
+ncol(merged)
+
+# Data cleaning --------------------------------------------------------------
+## Create a new dataset to store the cleaned data
+merged_cleaned <- merged
+
+## DOB: Set unrealistic birth dates to NA
+### Set earliest date as 1900-01-01 and latest date as today
+earliest_reasonable_date <- as.Date("1900-01-01")
+latest_reasonable_date <- Sys.Date() 
+### Change date format
+merged_cleaned$DOB <- as.Date(as.character(merged_cleaned$DOB), format = "%m/%d/%Y")
+### Set unrealistic birth dates to NA
+merged_cleaned <- merged_cleaned %>%
+  mutate(
+    DOB = case_when(
+      DOB < as.Date("1900-01-01") ~ as.Date(NA),
+      DOB > Sys.Date() ~ as.Date(NA),
+      TRUE ~ DOB
+    )
+  )
+
+## BMI: set -999 to NA and truncate extreme values
+merged_cleaned$BMI.r[merged_cleaned$BMI.r == -999] <- NA
+merged_cleaned$BMI.r[merged_cleaned$BMI.r < 10] <- 10
+merged_cleaned$BMI.r[merged_cleaned$BMI.r > 50] <- 50
+
+## WBC: set anything <0.05 to 0.05
+merged_cleaned$WBC[merged_cleaned$WBC < 0.05] <- 0.05
+
+## Remove rows with missing data
+merged_cleaned <- merged_cleaned[!is.na(merged_cleaned$DOB), ]
+merged_cleaned <- merged_cleaned[!is.na(merged_cleaned$distress_score), ]
+merged_cleaned <- merged_cleaned[!is.na(merged_cleaned$WBC), ]
+merged_cleaned <- merged_cleaned[!is.na(merged_cleaned$BMI.r), ]
+
+## Dimensions after data cleaning
+nrow(merged_cleaned)
+ncol(merged_cleaned)
+```
+
+
+# Data cleaning issues
+The distress_score, WBC and BMI.r columns have missing data, the DOB column have unrealistic date of birth before 1900, the BMI.r column has implausible data such as -999 and values below 10 and over 50, and the WBC column have extremely low WBC counts < 0.05.
+
+
+# Create a table of the categorical WBC variable
+```{r}
+# Re-ategorize WBC into a categorical variable -------------------------------
+merged_cleaned$WBC_cat <- ifelse(is.na(merged_cleaned$WBC), "Not Taken",
+                                 ifelse(merged_cleaned$WBC < 3.2, "Low",
+                                 ifelse(merged_cleaned$WBC <= 9.8, "Normal", "High")))
+
+# Create a table of the categorical WBC variable -----------------------------
+## Create a table containing the counts of each WBC category
+wbc_table <- merged_cleaned %>%
+  count(WBC_cat) %>%
+  mutate(
+    Percentage = round(n / sum(n) * 100, 1),
+    `Count (%)` = paste0(n, " (", Percentage, "%)")
+  ) %>%
+  select(WBC_cat, `Count (%)`)
+
+## Order the rows logically, from low to high
+wbc_table$WBC_cat <- factor(wbc_table$WBC_cat, 
+                            levels = c("Low", "Normal", "High", "Not Taken"))
+wbc_table <- wbc_table %>% arrange(WBC_cat)
+
+## Rename columns
+names(wbc_table) <- c("WBC Category", "Count (%)")
+
+## Print table
+kable(wbc_table, 
+      align = c("l", "r"),
+      caption = "Counts of Categorical WBC")
+```
+
+# Create & print Table1
+```{r}
+# Get unique MRN for each patient --------------------------------------------
+patient_data <- merged_cleaned %>%
+  distinct(MRN, .keep_all = TRUE)
+
+# Function to create frequency table -----------------------------------------
+create_freq_table <- function(data, var_name, var_label, custom_order = NULL) {
+  freq_table <- data %>%
+    count(!!sym(var_name), name = "n") %>%
+    mutate(
+      Category = as.character(!!sym(var_name)),
+      Percentage = round(n / sum(n) * 100, 1),
+      `N (%)` = paste0(n, " (", Percentage, "%)")
+    ) %>%
+    select(Category, `N (%)`)
+  
+  ## Apply custom order if provided (to put "Other" at the end and to follow a Yes, No order in comorbidities)
+  if (!is.null(custom_order)) {
+    freq_table <- freq_table %>%
+      mutate(Category = factor(Category, levels = custom_order)) %>%
+      arrange(Category) %>%
+      mutate(Category = as.character(Category))
+  }
+  
+  ## Add variable label as header
+  freq_table <- bind_rows(
+    tibble(Category = paste0("**", var_label, "**"), `N (%)` = ""),
+    freq_table
+  )
+  
+  return(freq_table)
+}
+
+# Create demographics section ------------------------------------------------
+demographics <- bind_rows(
+  create_freq_table(patient_data, "race", "Race", 
+                   custom_order = c("Black", "White", "Other")),
+  create_freq_table(patient_data, "ethnicity", "Ethnicity"),
+  create_freq_table(patient_data, "financialclass", "Financial Class")
+)
+
+# Create Comorbidities section with Yes/No order -----------------------------
+comorbidities <- bind_rows(
+  ## Header
+  tibble(Category = "**Comorbidities**", `N (%)` = ""),
+  
+  ## Hypertension
+  tibble(Category = "**Hypertension**", `N (%)` = ""),
+  create_freq_table(patient_data, "hypertension", "Hypertension", 
+                   custom_order = c("Y", "N")) %>%
+    filter(!str_detect(Category, "\\*\\*")),
+  
+  ## CHF
+  tibble(Category = "**Congestive Heart Failure**", `N (%)` = ""),
+  create_freq_table(patient_data, "CHF", "Congestive Heart Failure",
+                   custom_order = c("Y", "N")) %>%
+    filter(!str_detect(Category, "\\*\\*")),
+  
+  ## Diabetes
+  tibble(Category = "**Diabetes**", `N (%)` = ""),
+  create_freq_table(patient_data, "diabetes", "Diabetes",
+                   custom_order = c("Y", "N")) %>%
+    filter(!str_detect(Category, "\\*\\*"))
+)
+
+# Combine all sections -------------------------------------------------------
+table1 <- bind_rows(demographics, comorbidities) %>%
+  mutate(
+    ## Identify if this is a comorbidity subheader
+    is_comorbidity_subheader = Category %in% c("**Hypertension**", 
+                                                 "**Congestive Heart Failure**", 
+                                                 "**Diabetes**"),
+    ## Clean up and format category names
+    Category = case_when(
+      ## Main section headers (bold)
+      Category == "**Race**" ~ Category,
+      Category == "**Ethnicity**" ~ Category,
+      Category == "**Financial Class**" ~ Category,
+      Category == "**Comorbidities**" ~ Category,
+      ## Comorbidity subheaders
+      is_comorbidity_subheader ~ Category,
+      ## Convert Y/N to Yes/No
+      Category == "Y" ~ "    Yes",
+      Category == "N" ~ "    No",
+      ## Add indentation to demographics
+      TRUE ~ paste0("  ", Category)
+    )
+  ) %>%
+  select(-is_comorbidity_subheader)
+
+# Print table ----------------------------------------------------------------
+kable(table1, 
+      align = c("l", "r"),
+      col.names = c("Characteristic", "N (%)"),
+      caption = paste0("Table 1: Baseline Participant Demographics and Disease Characteristics (n = ", nrow(patient_data), ")"),
+      format = "markdown")
+```
+
